@@ -101,6 +101,51 @@ function fmtMoney(n: number): string {
 
 const ALL = '__all__';
 
+// Multiple companies can share a zipcode, and zipcodes geocode to a single
+// centroid — so those markers would stack on the exact same point, leaving all
+// but the top one hidden and unclickable. Fan any such collisions out on a
+// small spiral around the shared centroid so each marker is individually
+// visible and clickable. (The heat layer keeps the true coordinates; only the
+// marker positions are nudged.)
+interface PlacedPoint {
+  row: SalesRow;
+  ll: LatLng;
+  at: [number, number]; // display coordinate (may be jittered)
+}
+
+function spreadOverlaps(points: { row: SalesRow; ll: LatLng }[]): PlacedPoint[] {
+  const groups = new Map<string, { row: SalesRow; ll: LatLng }[]>();
+  for (const p of points) {
+    const key = `${p.ll.lat.toFixed(5)},${p.ll.lng.toFixed(5)}`;
+    const g = groups.get(key);
+    if (g) g.push(p);
+    else groups.set(key, [p]);
+  }
+
+  const GOLDEN_ANGLE = 2.399963229728653; // even, non-clumping angular spacing
+  const STEP = 0.025; // degrees; controls how far apart fanned markers sit
+  const out: PlacedPoint[] = [];
+
+  for (const g of groups.values()) {
+    if (g.length === 1) {
+      out.push({ ...g[0], at: [g[0].ll.lat, g[0].ll.lng] });
+      continue;
+    }
+    // Sunflower spiral: radius grows as sqrt(i), angle steps by the golden
+    // angle, giving an even fan that scales to any group size.
+    g.forEach((p, i) => {
+      const radius = STEP * Math.sqrt(i + 0.5);
+      const angle = i * GOLDEN_ANGLE;
+      const lat = p.ll.lat + radius * Math.cos(angle);
+      // Compensate longitude for latitude so the fan stays roughly circular.
+      const lng = p.ll.lng + (radius * Math.sin(angle)) / Math.cos((p.ll.lat * Math.PI) / 180);
+      out.push({ ...p, at: [lat, lng] });
+    });
+  }
+
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -308,10 +353,10 @@ export function SalesHeatmap() {
     if (layer) {
       layer.clearLayers();
       if (showMarkers) {
-        for (const p of points) {
+        for (const p of spreadOverlaps(points)) {
           const radius = 6 + (p.row.sales / maxSales) * 22;
           const color = engineerColor[p.row.engineer] ?? '#F76902';
-          const marker = L.circleMarker([p.ll.lat, p.ll.lng], {
+          const marker = L.circleMarker(p.at, {
             radius,
             color: '#ffffff',
             weight: 1.5,
