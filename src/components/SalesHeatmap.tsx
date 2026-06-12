@@ -429,17 +429,29 @@ export function SalesHeatmap() {
 
     const maxSales = points.reduce((m, p) => Math.max(m, p.row.sales), 0) || 1;
 
-    // Heat layer
+    // Heat layer — driven purely by sales, not by location/density. We sum
+    // each location's sales (so a spot's intensity reflects its *total* sales,
+    // not how many accounts happen to sit there) and weight by that total with
+    // no presence floor, so $0 locations produce no heat at all.
     if (heatRef.current) {
       map.removeLayer(heatRef.current);
       heatRef.current = null;
     }
-    if (showHeat && points.length) {
-      const heatData: [number, number, number][] = points.map((p) => [
-        p.ll.lat,
-        p.ll.lng,
-        Math.max(0.15, p.row.sales / maxSales),
-      ]);
+    const salesByZip = new Map<string, { lat: number; lng: number; sales: number }>();
+    for (const p of points) {
+      const e = salesByZip.get(p.row.zip);
+      if (e) e.sales += p.row.sales;
+      else salesByZip.set(p.row.zip, { lat: p.ll.lat, lng: p.ll.lng, sales: p.row.sales });
+    }
+    let maxZipSales = 0;
+    for (const e of salesByZip.values()) maxZipSales = Math.max(maxZipSales, e.sales);
+    maxZipSales = maxZipSales || 1;
+
+    const heatData: [number, number, number][] = Array.from(salesByZip.values())
+      .filter((e) => e.sales > 0)
+      .map((e) => [e.lat, e.lng, e.sales / maxZipSales]);
+
+    if (showHeat && heatData.length) {
       heatRef.current = L.heatLayer(heatData, {
         radius: 32,
         blur: 22,
