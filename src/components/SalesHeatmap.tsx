@@ -455,7 +455,11 @@ export function SalesHeatmap() {
       heatRef.current = L.heatLayer(heatData, {
         radius: 32,
         blur: 22,
-        maxZoom: 12,
+        // leaflet.heat attenuates intensity by 1/2^(maxZoom - currentZoom)
+        // below maxZoom, which made a lone large account look cold when zoomed
+        // out to a regional view. Pin it low so a location's heat reflects its
+        // sales at every zoom instead of fading with distance/zoom.
+        maxZoom: 0,
         minOpacity: 0.35,
         gradient: { 0.2: '#2563EB', 0.4: '#16A34A', 0.6: '#FACC15', 0.8: '#F76902', 1.0: '#DC2626' },
       }).addTo(map);
