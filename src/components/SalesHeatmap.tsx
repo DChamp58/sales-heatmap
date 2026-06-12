@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet.heat';
 import {
   Upload, MapPin, Users, Building2, DollarSign, AlertTriangle,
-  Download, Loader2, X, Flame, Layers,
+  Download, Loader2, X, Flame, Layers, EyeOff,
 } from 'lucide-react';
 import { geocodeZips, normalizeZip, type LatLng } from '../lib/geocode';
 
@@ -14,6 +14,7 @@ import { geocodeZips, normalizeZip, type LatLng } from '../lib/geocode';
 // ---------------------------------------------------------------------------
 
 interface SalesRow {
+  id: string; // stable id so a marker can edit/delete its exact record
   company: string;
   sales: number;
   zip: string;
@@ -73,6 +74,7 @@ function parseWorkbook(data: ArrayBuffer): ParseResult {
       continue;
     }
     rows.push({
+      id: crypto.randomUUID(),
       company: cols.company ? String(r[cols.company] || 'Unknown').trim() : 'Unknown',
       sales: cols.sales ? parseSales(r[cols.sales]) : 0,
       zip,
@@ -146,6 +148,100 @@ function spreadOverlaps(points: { row: SalesRow; ll: LatLng }[]): PlacedPoint[] 
   return out;
 }
 
+// Build an interactive marker popup: the account details plus an inline editor
+// for fixing the zipcode (re-geocodes on save) or deleting the record. Returns
+// a DOM node so we can wire real event handlers, and stops clicks/scrolls from
+// leaking through to the map underneath.
+function buildMarkerPopup(
+  p: PlacedPoint,
+  color: string,
+  handlers: { onSaveZip: (zip: string) => void; onDelete: () => void }
+): HTMLElement {
+  const el = document.createElement('div');
+  el.style.cssText = 'font-family:system-ui;min-width:200px';
+  el.innerHTML = `
+    <div style="font-weight:700;color:#402E32;margin-bottom:4px">${escapeHtml(p.row.company)}</div>
+    <div style="color:#F76902;font-weight:600;font-size:15px">${fmtMoney(p.row.sales)}</div>
+    <div style="color:#6b5b56;font-size:12px;margin-top:4px">
+      <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:5px"></span>
+      ${escapeHtml(p.row.engineer)}
+    </div>
+    ${p.row.industry ? `<div style="color:#6b5b56;font-size:12px">${escapeHtml(p.row.industry)}</div>` : ''}
+    <div style="color:#9c8a84;font-size:11px;margin-top:4px">${escapeHtml(p.ll.place ?? p.row.zip)}</div>`;
+
+  const editor = document.createElement('div');
+  editor.style.cssText = 'margin-top:8px;padding-top:8px;border-top:1px solid #E8D5C4;display:flex;flex-direction:column;gap:6px';
+
+  const zipRow = document.createElement('div');
+  zipRow.style.cssText = 'display:flex;align-items:center;gap:6px';
+  const label = document.createElement('span');
+  label.textContent = 'Zip';
+  label.style.cssText = 'font-size:12px;color:#6b5b56';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = p.row.zip;
+  input.maxLength = 10;
+  input.style.cssText = 'flex:1;min-width:0;border:1px solid #E8D5C4;border-radius:6px;padding:4px 6px;font-size:12px;color:#402E32';
+  const saveBtn = document.createElement('button');
+  saveBtn.type = 'button';
+  saveBtn.textContent = 'Save';
+  saveBtn.style.cssText = 'background:#F76902;border:none;color:#fff;border-radius:6px;padding:4px 10px;font-size:12px;font-weight:600;cursor:pointer';
+  zipRow.append(label, input, saveBtn);
+
+  const msg = document.createElement('div');
+  msg.style.cssText = 'font-size:11px;color:#B91C1C;display:none';
+
+  const delBtn = document.createElement('button');
+  delBtn.type = 'button';
+  delBtn.textContent = 'Delete account';
+  delBtn.style.cssText = 'background:transparent;border:1px solid #FECACA;color:#B91C1C;border-radius:6px;padding:4px 10px;font-size:12px;font-weight:600;cursor:pointer';
+
+  const clearMsg = () => {
+    msg.style.display = 'none';
+    input.style.borderColor = '#E8D5C4';
+  };
+  const showMsg = (text: string) => {
+    msg.textContent = text;
+    msg.style.display = 'block';
+  };
+
+  saveBtn.addEventListener('click', () => {
+    const norm = normalizeZip(input.value);
+    if (!norm) {
+      input.style.borderColor = '#FECACA';
+      showMsg('Enter a valid 5-digit US zip.');
+      return;
+    }
+    if (norm === p.row.zip) {
+      showMsg('That is already the current zip.');
+      return;
+    }
+    saveBtn.textContent = 'Saving…';
+    saveBtn.disabled = true;
+    handlers.onSaveZip(norm);
+  });
+  input.addEventListener('input', clearMsg);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveBtn.click(); });
+
+  // Two-click confirm so a stray click can't wipe a record.
+  let armed = false;
+  delBtn.addEventListener('click', () => {
+    if (!armed) {
+      armed = true;
+      delBtn.textContent = 'Click again to confirm';
+      return;
+    }
+    handlers.onDelete();
+  });
+
+  editor.append(zipRow, msg, delBtn);
+  el.appendChild(editor);
+
+  L.DomEvent.disableClickPropagation(el);
+  L.DomEvent.disableScrollPropagation(el);
+  return el;
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -165,6 +261,7 @@ export function SalesHeatmap() {
   const [industryFilter, setIndustryFilter] = useState<string>(ALL);
   const [showHeat, setShowHeat] = useState(true);
   const [showMarkers, setShowMarkers] = useState(true);
+  const [hideNoSales, setHideNoSales] = useState(false);
 
   const mapEl = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -284,6 +381,19 @@ export function SalesHeatmap() {
     setError(null);
   }
 
+  // -- Editing data from a marker --------------------------------------------
+
+  const deleteRow = useCallback((id: string) => {
+    setRows((rs) => rs.filter((r) => r.id !== id));
+  }, []);
+
+  // Update a record's zipcode and re-geocode it (cached lookups are instant).
+  const updateRowZip = useCallback(async (id: string, zip: string) => {
+    setRows((rs) => rs.map((r) => (r.id === id ? { ...r, zip } : r)));
+    const resolved = await geocodeZips([zip]);
+    setGeo((g) => ({ ...g, ...resolved }));
+  }, []);
+
   // -- Map init --------------------------------------------------------------
 
   useEffect(() => {
@@ -353,7 +463,9 @@ export function SalesHeatmap() {
     if (layer) {
       layer.clearLayers();
       if (showMarkers) {
-        for (const p of spreadOverlaps(points)) {
+        // Optionally hide accounts with no sales (the heat layer is unaffected).
+        const markerPoints = hideNoSales ? points.filter((p) => p.row.sales > 0) : points;
+        for (const p of spreadOverlaps(markerPoints)) {
           const radius = 6 + (p.row.sales / maxSales) * 22;
           const color = engineerColor[p.row.engineer] ?? '#F76902';
           const marker = L.circleMarker(p.at, {
@@ -364,16 +476,11 @@ export function SalesHeatmap() {
             fillOpacity: 0.8,
           });
           marker.bindPopup(
-            `<div style="font-family:system-ui;min-width:160px">
-               <div style="font-weight:700;color:#402E32;margin-bottom:4px">${escapeHtml(p.row.company)}</div>
-               <div style="color:#F76902;font-weight:600;font-size:15px">${fmtMoney(p.row.sales)}</div>
-               <div style="color:#6b5b56;font-size:12px;margin-top:4px">
-                 <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:5px"></span>
-                 ${escapeHtml(p.row.engineer)}
-               </div>
-               ${p.row.industry ? `<div style="color:#6b5b56;font-size:12px">${escapeHtml(p.row.industry)}</div>` : ''}
-               <div style="color:#9c8a84;font-size:11px;margin-top:4px">${escapeHtml(p.ll.place ?? p.row.zip)} · ${p.row.zip}</div>
-             </div>`
+            buildMarkerPopup(p, color, {
+              onSaveZip: (zip) => updateRowZip(p.row.id, zip),
+              onDelete: () => deleteRow(p.row.id),
+            }),
+            { minWidth: 200 }
           );
           layer.addLayer(marker);
         }
@@ -385,7 +492,7 @@ export function SalesHeatmap() {
       const bounds = L.latLngBounds(points.map((p) => [p.ll.lat, p.ll.lng] as [number, number]));
       map.fitBounds(bounds.pad(0.2), { maxZoom: 11 });
     }
-  }, [filtered, geo, showHeat, showMarkers, engineerColor]);
+  }, [filtered, geo, showHeat, showMarkers, hideNoSales, engineerColor, updateRowZip, deleteRow]);
 
   // Make sure Leaflet recalculates size after the container mounts.
   useEffect(() => {
@@ -502,6 +609,7 @@ export function SalesHeatmap() {
 
               <Toggle active={showHeat} onClick={() => setShowHeat((v) => !v)} icon={<Flame size={15} />} label="Heat" />
               <Toggle active={showMarkers} onClick={() => setShowMarkers((v) => !v)} icon={<Layers size={15} />} label="Markers" />
+              <Toggle active={hideNoSales} onClick={() => setHideNoSales((v) => !v)} icon={<EyeOff size={15} />} label="Hide $0" />
             </div>
 
             {/* Stat cards */}
