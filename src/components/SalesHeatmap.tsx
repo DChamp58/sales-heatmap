@@ -292,6 +292,15 @@ export function SalesHeatmap() {
         minOpacity: 0.35,
         gradient: { 0.2: '#2563EB', 0.4: '#16A34A', 0.6: '#FACC15', 0.8: '#F76902', 1.0: '#DC2626' },
       }).addTo(map);
+
+      // leaflet.heat appends its <canvas> to the overlayPane on top of the
+      // circle markers, and re-appends it (back to the top) every time the
+      // layer is re-added. That canvas would otherwise swallow clicks meant
+      // for the markers underneath, making them unclickable whenever the heat
+      // layer is showing. The heat layer is purely decorative, so let pointer
+      // events fall straight through to the markers below.
+      const heatCanvas = (heatRef.current as unknown as { _canvas?: HTMLCanvasElement })._canvas;
+      if (heatCanvas) heatCanvas.style.pointerEvents = 'none';
     }
 
     // Markers
