@@ -5,7 +5,7 @@ import 'leaflet/dist/leaflet.css';
 import 'leaflet.heat';
 import {
   Upload, MapPin, Users, Building2, DollarSign, AlertTriangle,
-  Download, Loader2, X, Flame, Layers, EyeOff, Search, Map as MapIcon, Trophy,
+  Download, Loader2, X, Flame, Layers, EyeOff, Search, Map as MapIcon, Trophy, FilterX,
 } from 'lucide-react';
 import { geocodeZips, normalizeZip, type LatLng } from '../lib/geocode';
 
@@ -372,6 +372,16 @@ export function SalesHeatmap() {
     setQuery('');
   }, []);
 
+  const filtersActive =
+    engineerFilter !== ALL || industryFilter !== ALL || regionFilter !== ALL || query.trim() !== '';
+
+  const clearFilters = useCallback(() => {
+    setEngineerFilter(ALL);
+    setIndustryFilter(ALL);
+    setRegionFilter(ALL);
+    setQuery('');
+  }, []);
+
   // -- File handling ---------------------------------------------------------
 
   async function handleFile(file: File) {
@@ -697,6 +707,20 @@ export function SalesHeatmap() {
               {regions.length > 0 && (
                 <Select label="Region" value={regionFilter} onChange={setRegionFilter}
                   options={[{ value: ALL, label: 'All Regions' }, ...regions.map((r) => ({ value: r, label: r }))]} />
+              )}
+
+              {filtersActive && (
+                <button
+                  onClick={clearFilters}
+                  title="Clear all filters"
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '13px', fontWeight: 600,
+                    padding: '8px 12px', borderRadius: '8px', cursor: 'pointer',
+                    border: '1px solid #E8D5C4', backgroundColor: '#FFFFFF', color: '#B5866E',
+                  }}
+                >
+                  <FilterX size={15} /> Clear filters
+                </button>
               )}
             </div>
 
