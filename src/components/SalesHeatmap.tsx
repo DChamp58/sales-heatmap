@@ -5,7 +5,7 @@ import 'leaflet/dist/leaflet.css';
 import 'leaflet.heat';
 import {
   Upload, MapPin, Users, Building2, DollarSign, AlertTriangle,
-  Download, Loader2, X, Flame, Layers, EyeOff, Search, Map as MapIcon,
+  Download, Loader2, X, Flame, Layers, EyeOff, Search, Map as MapIcon, Trophy,
 } from 'lucide-react';
 import { geocodeZips, normalizeZip, type LatLng } from '../lib/geocode';
 
@@ -343,6 +343,7 @@ export function SalesHeatmap() {
       byEngineer: sortDesc(byEngineer),
       byIndustry: sortDesc(byIndustry),
       byState: sortDesc(byState),
+      topAccounts: [...filtered].sort((a, b) => b.sales - a.sales).slice(0, 10),
     };
   }, [filtered, geo]);
 
@@ -727,6 +728,14 @@ export function SalesHeatmap() {
 
               {/* Breakdown panel */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <TopAccounts
+                  accounts={stats.topAccounts}
+                  total={stats.totalSales}
+                  colorFor={(name) => engineerColor[name] ?? '#F76902'}
+                  regionFor={(zip) => regionOf(geo[zip])}
+                  locatable={(zip) => !!geo[zip]}
+                  onPick={goToRow}
+                />
                 <Breakdown
                   title="Sales by Engineer"
                   entries={stats.byEngineer}
@@ -822,6 +831,55 @@ function Toggle({ active, onClick, icon, label }: { active: boolean; onClick: ()
     >
       {icon}{label}
     </button>
+  );
+}
+
+// Ranked list of the largest deals. Each row shows its rank, engineer color,
+// region, and amount; clicking a located account flies the map to its marker.
+function TopAccounts({ accounts, total, colorFor, regionFor, locatable, onPick }: {
+  accounts: SalesRow[];
+  total: number;
+  colorFor: (engineer: string) => string;
+  regionFor: (zip: string) => string | null;
+  locatable: (zip: string) => boolean;
+  onPick: (id: string) => void;
+}) {
+  return (
+    <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8D5C4', borderRadius: '12px', padding: '16px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '15px', fontWeight: 700, color: '#402E32', marginBottom: '12px' }}>
+        <Trophy size={16} style={{ color: '#CA8A04' }} /> Top Accounts
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', maxHeight: '300px', overflowY: 'auto' }}>
+        {accounts.map((r, i) => {
+          const region = regionFor(r.zip);
+          const canGo = locatable(r.zip);
+          const pct = total > 0 ? (r.sales / total) * 100 : 0;
+          return (
+            <div
+              key={r.id}
+              onClick={canGo ? () => onPick(r.id) : undefined}
+              title={canGo ? `Show ${r.company} on the map` : 'Not placed on the map'}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '8px',
+                padding: '7px 4px', margin: '0 -4px',
+                borderBottom: i < accounts.length - 1 ? '1px solid #F3EBE4' : 'none',
+                cursor: canGo ? 'pointer' : 'default',
+                opacity: canGo ? 1 : 0.6,
+              }}
+            >
+              <span style={{ width: '18px', fontSize: '12px', fontWeight: 700, color: '#B5866E', flexShrink: 0, textAlign: 'right' }}>{i + 1}</span>
+              <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: colorFor(r.engineer), flexShrink: 0 }} title={r.engineer} />
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#402E32', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.company}</span>
+                <span style={{ display: 'block', fontSize: '11px', color: '#9c8a84' }}>{region ?? r.zip}{pct >= 0.05 ? ` · ${pct.toFixed(0)}% of total` : ''}</span>
+              </span>
+              <span style={{ fontSize: '13px', fontWeight: 700, color: '#F76902', flexShrink: 0 }}>{fmtMoney(r.sales)}</span>
+            </div>
+          );
+        })}
+        {accounts.length === 0 && <div style={{ color: '#B5866E', fontSize: '13px' }}>No data</div>}
+      </div>
+    </div>
   );
 }
 

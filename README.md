@@ -21,6 +21,8 @@ from — by region, by industry, and by sales engineer.
   zip and flies the map to its marker, opening the popup.
 - **Region rollups** — sales aggregated by US state, with a clickable
   "Sales by Region" breakdown that drills the map into a single state.
+- **Top accounts** — ranked list of the largest deals; click one to fly the
+  map to that account. Respects the active filters.
 - **Drill-down breakdowns** — clicking any engineer, region, or industry row
   applies it as a filter (click again to clear).
 - **Summary** — total sales, company count, # engineers, # states, geolocated
