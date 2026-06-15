@@ -568,9 +568,19 @@ export function SalesHeatmap() {
     }
   }, [filtered, geo, showHeat, showMarkers, hideNoSales, engineerColor, updateRowZip, deleteRow]);
 
-  // Make sure Leaflet recalculates size after the container mounts.
+  // Keep Leaflet's view in sync with the container size. Leaflet measures the
+  // container once at init; if the layout isn't final yet (fonts/grid settling)
+  // it renders tiles for only part of the box — the "half map" bug. Re-measure
+  // after mount AND whenever the container resizes (responsive breakpoints,
+  // window resize) so the map always fills its box.
   useEffect(() => {
-    if (mapRef.current) setTimeout(() => mapRef.current?.invalidateSize(), 100);
+    const map = mapRef.current;
+    const el = mapEl.current;
+    if (!map || !el) return;
+    const settle = setTimeout(() => map.invalidateSize(), 100);
+    const ro = new ResizeObserver(() => map.invalidateSize());
+    ro.observe(el);
+    return () => { clearTimeout(settle); ro.disconnect(); };
   }, [rows.length]);
 
   // -------------------------------------------------------------------------
@@ -688,10 +698,13 @@ export function SalesHeatmap() {
                 <Select label="Region" value={regionFilter} onChange={setRegionFilter}
                   options={[{ value: ALL, label: 'All Regions' }, ...regions.map((r) => ({ value: r, label: r }))]} />
               )}
+            </div>
 
-              <Toggle active={showHeat} onClick={() => setShowHeat((v) => !v)} icon={<Flame size={15} />} label="Heat" />
-              <Toggle active={showMarkers} onClick={() => setShowMarkers((v) => !v)} icon={<Layers size={15} />} label="Markers" />
-              <Toggle active={hideNoSales} onClick={() => setHideNoSales((v) => !v)} icon={<EyeOff size={15} />} label="Hide $0" />
+            {/* Layer toggles — own row, equal-width, centered */}
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '12px', marginBottom: '16px' }}>
+              <Toggle active={showHeat} onClick={() => setShowHeat((v) => !v)} icon={<Flame size={15} />} label="Heat" style={{ width: '130px' }} />
+              <Toggle active={showMarkers} onClick={() => setShowMarkers((v) => !v)} icon={<Layers size={15} />} label="Markers" style={{ width: '130px' }} />
+              <Toggle active={hideNoSales} onClick={() => setHideNoSales((v) => !v)} icon={<EyeOff size={15} />} label="Hide $0" style={{ width: '130px' }} />
             </div>
 
             {/* Stat cards */}
@@ -711,8 +724,31 @@ export function SalesHeatmap() {
               </div>
             )}
 
-            {/* Map + breakdown */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 320px', gap: '16px' }} className="heatmap-layout">
+            {/* Widgets flank the map: left column, map, right column */}
+            <div style={{ display: 'grid', gridTemplateColumns: '300px minmax(0, 1fr) 300px', gap: '16px', alignItems: 'start' }} className="heatmap-layout">
+              {/* Left widgets */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <TopAccounts
+                  accounts={stats.topAccounts}
+                  total={stats.totalSales}
+                  colorFor={(name) => engineerColor[name] ?? '#F76902'}
+                  regionFor={(zip) => regionOf(geo[zip])}
+                  locatable={(zip) => !!geo[zip]}
+                  onPick={goToRow}
+                />
+                {stats.byState.length > 0 && (
+                  <Breakdown
+                    title="Sales by Region"
+                    entries={stats.byState}
+                    total={stats.totalSales}
+                    colorFor={() => '#0891B2'}
+                    activeName={regionFilter === ALL ? null : regionFilter}
+                    onSelect={(name) => setRegionFilter((cur) => (cur === name ? ALL : name))}
+                  />
+                )}
+              </div>
+
+              {/* Map */}
               <div style={{ position: 'relative', borderRadius: '14px', overflow: 'hidden', border: '1px solid #E8D5C4', boxShadow: '0 2px 12px rgba(64,46,50,0.06)' }}>
                 <div ref={mapEl} style={{ width: '100%', height: '560px', backgroundColor: '#EAE3DC' }} />
                 {/* Legend */}
@@ -726,16 +762,8 @@ export function SalesHeatmap() {
                 </div>
               </div>
 
-              {/* Breakdown panel */}
+              {/* Right widgets */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                <TopAccounts
-                  accounts={stats.topAccounts}
-                  total={stats.totalSales}
-                  colorFor={(name) => engineerColor[name] ?? '#F76902'}
-                  regionFor={(zip) => regionOf(geo[zip])}
-                  locatable={(zip) => !!geo[zip]}
-                  onPick={goToRow}
-                />
                 <Breakdown
                   title="Sales by Engineer"
                   entries={stats.byEngineer}
@@ -744,16 +772,6 @@ export function SalesHeatmap() {
                   activeName={engineerFilter === ALL ? null : engineerFilter}
                   onSelect={(name) => setEngineerFilter((cur) => (cur === name ? ALL : name))}
                 />
-                {stats.byState.length > 0 && (
-                  <Breakdown
-                    title="Sales by Region"
-                    entries={stats.byState}
-                    total={stats.totalSales}
-                    colorFor={() => '#0891B2'}
-                    activeName={regionFilter === ALL ? null : regionFilter}
-                    onSelect={(name) => setRegionFilter((cur) => (cur === name ? ALL : name))}
-                  />
-                )}
                 {hasIndustry && stats.byIndustry.length > 0 && (
                   <Breakdown
                     title="Sales by Industry"
@@ -771,7 +789,7 @@ export function SalesHeatmap() {
       </div>
 
       <style>{`
-        @media (max-width: 900px) {
+        @media (max-width: 1100px) {
           .heatmap-layout { grid-template-columns: 1fr !important; }
         }
       `}</style>
@@ -817,16 +835,19 @@ function Select({ label, value, onChange, options }: {
   );
 }
 
-function Toggle({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
+function Toggle({ active, onClick, icon, label, style }: {
+  active: boolean; onClick: () => void; icon: React.ReactNode; label: string; style?: React.CSSProperties;
+}) {
   return (
     <button
       onClick={onClick}
       style={{
-        display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '13px', fontWeight: 600,
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '6px', fontSize: '13px', fontWeight: 600,
         padding: '8px 12px', borderRadius: '8px', cursor: 'pointer',
         border: `1px solid ${active ? '#F76902' : '#E8D5C4'}`,
         backgroundColor: active ? '#FFF1E6' : '#FFFFFF',
         color: active ? '#F76902' : '#B5866E',
+        ...style,
       }}
     >
       {icon}{label}
