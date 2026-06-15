@@ -5,7 +5,7 @@ import 'leaflet/dist/leaflet.css';
 import 'leaflet.heat';
 import {
   Upload, MapPin, Users, Building2, DollarSign, AlertTriangle,
-  Download, Loader2, X, Flame, Layers, EyeOff,
+  Download, Loader2, X, Flame, Layers, EyeOff, Search, Map as MapIcon,
 } from 'lucide-react';
 import { geocodeZips, normalizeZip, type LatLng } from '../lib/geocode';
 
@@ -102,6 +102,19 @@ function fmtMoney(n: number): string {
 }
 
 const ALL = '__all__';
+
+// Derive a two-letter state abbreviation from a geocoded point. Newer lookups
+// carry `state` directly; older cached entries only have a "City, ST" place
+// string, so fall back to parsing the trailing token.
+function regionOf(ll: LatLng | null | undefined): string | null {
+  if (!ll) return null;
+  if (ll.state) return ll.state;
+  if (ll.place) {
+    const parts = ll.place.split(',');
+    if (parts.length > 1) return parts[parts.length - 1].trim() || null;
+  }
+  return null;
+}
 
 // Multiple companies can share a zipcode, and zipcodes geocode to a single
 // centroid — so those markers would stack on the exact same point, leaving all
@@ -259,14 +272,17 @@ export function SalesHeatmap() {
 
   const [engineerFilter, setEngineerFilter] = useState<string>(ALL);
   const [industryFilter, setIndustryFilter] = useState<string>(ALL);
+  const [regionFilter, setRegionFilter] = useState<string>(ALL);
   const [showHeat, setShowHeat] = useState(true);
   const [showMarkers, setShowMarkers] = useState(true);
   const [hideNoSales, setHideNoSales] = useState(false);
+  const [query, setQuery] = useState('');
 
   const mapEl = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const heatRef = useRef<L.HeatLayer | null>(null);
   const markersRef = useRef<L.LayerGroup | null>(null);
+  const markerByIdRef = useRef<Map<string, L.CircleMarker>>(new Map());
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // -- Derived lists ---------------------------------------------------------
@@ -278,6 +294,10 @@ export function SalesHeatmap() {
   const industries = useMemo(
     () => Array.from(new Set(rows.map((r) => r.industry).filter(Boolean) as string[])).sort(),
     [rows]
+  );
+  const regions = useMemo(
+    () => Array.from(new Set(rows.map((r) => regionOf(geo[r.zip])).filter(Boolean) as string[])).sort(),
+    [rows, geo]
   );
 
   const engineerColor = useMemo(() => {
@@ -291,9 +311,10 @@ export function SalesHeatmap() {
       rows.filter(
         (r) =>
           (engineerFilter === ALL || r.engineer === engineerFilter) &&
-          (industryFilter === ALL || r.industry === industryFilter)
+          (industryFilter === ALL || r.industry === industryFilter) &&
+          (regionFilter === ALL || regionOf(geo[r.zip]) === regionFilter)
       ),
-    [rows, engineerFilter, industryFilter]
+    [rows, engineerFilter, industryFilter, regionFilter, geo]
   );
 
   // -- Summary stats ---------------------------------------------------------
@@ -304,9 +325,12 @@ export function SalesHeatmap() {
 
     const byEngineer = new Map<string, number>();
     const byIndustry = new Map<string, number>();
+    const byState = new Map<string, number>();
     for (const r of filtered) {
       byEngineer.set(r.engineer, (byEngineer.get(r.engineer) ?? 0) + r.sales);
       if (r.industry) byIndustry.set(r.industry, (byIndustry.get(r.industry) ?? 0) + r.sales);
+      const st = regionOf(geo[r.zip]);
+      if (st) byState.set(st, (byState.get(st) ?? 0) + r.sales);
     }
     const sortDesc = (m: Map<string, number>) =>
       Array.from(m.entries()).sort((a, b) => b[1] - a[1]);
@@ -315,10 +339,37 @@ export function SalesHeatmap() {
       totalSales,
       companies: filtered.length,
       located,
+      states: byState.size,
       byEngineer: sortDesc(byEngineer),
       byIndustry: sortDesc(byIndustry),
+      byState: sortDesc(byState),
     };
   }, [filtered, geo]);
+
+  // -- Search matches (company name or zip) ----------------------------------
+
+  const matches = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    return filtered
+      .filter(
+        (r) =>
+          geo[r.zip] &&
+          (!hideNoSales || r.sales > 0) &&
+          (r.company.toLowerCase().includes(q) || r.zip.includes(q))
+      )
+      .slice(0, 8);
+  }, [query, filtered, geo, hideNoSales]);
+
+  const goToRow = useCallback((id: string) => {
+    const map = mapRef.current;
+    const marker = markerByIdRef.current.get(id);
+    if (map && marker) {
+      map.flyTo(marker.getLatLng(), Math.max(map.getZoom(), 11), { duration: 0.6 });
+      marker.openPopup();
+    }
+    setQuery('');
+  }, []);
 
   // -- File handling ---------------------------------------------------------
 
@@ -340,6 +391,8 @@ export function SalesHeatmap() {
       setHasIndustry(hi);
       setEngineerFilter(ALL);
       setIndustryFilter(ALL);
+      setRegionFilter(ALL);
+      setQuery('');
 
       const zips = parsed.map((r) => r.zip);
       setProgress({ done: 0, total: new Set(zips).size });
@@ -379,6 +432,8 @@ export function SalesHeatmap() {
     setSkipped(0);
     setHasIndustry(false);
     setError(null);
+    setRegionFilter(ALL);
+    setQuery('');
   }
 
   // -- Editing data from a marker --------------------------------------------
@@ -478,6 +533,7 @@ export function SalesHeatmap() {
     const layer = markersRef.current;
     if (layer) {
       layer.clearLayers();
+      markerByIdRef.current.clear();
       if (showMarkers) {
         // Optionally hide accounts with no sales (the heat layer is unaffected).
         const markerPoints = hideNoSales ? points.filter((p) => p.row.sales > 0) : points;
@@ -499,6 +555,7 @@ export function SalesHeatmap() {
             { minWidth: 200 }
           );
           layer.addLayer(marker);
+          markerByIdRef.current.set(p.row.id, marker);
         }
       }
     }
@@ -615,12 +672,20 @@ export function SalesHeatmap() {
                 </button>
               </div>
 
+              <SearchBox query={query} setQuery={setQuery} matches={matches} onPick={goToRow}
+                colorFor={(name) => engineerColor[name] ?? '#F76902'} placeOf={(zip) => geo[zip]?.place ?? zip} />
+
               <Select label="Sales Engineer" value={engineerFilter} onChange={setEngineerFilter}
                 options={[{ value: ALL, label: 'All Engineers' }, ...engineers.map((e) => ({ value: e, label: e }))]} />
 
               {hasIndustry && (
                 <Select label="Industry" value={industryFilter} onChange={setIndustryFilter}
                   options={[{ value: ALL, label: 'All Industries' }, ...industries.map((i) => ({ value: i, label: i }))]} />
+              )}
+
+              {regions.length > 0 && (
+                <Select label="Region" value={regionFilter} onChange={setRegionFilter}
+                  options={[{ value: ALL, label: 'All Regions' }, ...regions.map((r) => ({ value: r, label: r }))]} />
               )}
 
               <Toggle active={showHeat} onClick={() => setShowHeat((v) => !v)} icon={<Flame size={15} />} label="Heat" />
@@ -633,6 +698,7 @@ export function SalesHeatmap() {
               <StatCard icon={<DollarSign size={18} />} label="Total Sales" value={fmtMoney(stats.totalSales)} />
               <StatCard icon={<Building2 size={18} />} label="Companies" value={String(stats.companies)} />
               <StatCard icon={<Users size={18} />} label="Sales Engineers" value={String(engineers.length)} />
+              <StatCard icon={<MapIcon size={18} />} label="States" value={String(stats.states)} />
               <StatCard icon={<MapPin size={18} />} label="Located" value={`${stats.located}/${stats.companies}`} />
             </div>
 
@@ -666,13 +732,27 @@ export function SalesHeatmap() {
                   entries={stats.byEngineer}
                   total={stats.totalSales}
                   colorFor={(name) => engineerColor[name] ?? '#F76902'}
+                  activeName={engineerFilter === ALL ? null : engineerFilter}
+                  onSelect={(name) => setEngineerFilter((cur) => (cur === name ? ALL : name))}
                 />
+                {stats.byState.length > 0 && (
+                  <Breakdown
+                    title="Sales by Region"
+                    entries={stats.byState}
+                    total={stats.totalSales}
+                    colorFor={() => '#0891B2'}
+                    activeName={regionFilter === ALL ? null : regionFilter}
+                    onSelect={(name) => setRegionFilter((cur) => (cur === name ? ALL : name))}
+                  />
+                )}
                 {hasIndustry && stats.byIndustry.length > 0 && (
                   <Breakdown
                     title="Sales by Industry"
                     entries={stats.byIndustry}
                     total={stats.totalSales}
                     colorFor={() => '#B5866E'}
+                    activeName={industryFilter === ALL ? null : industryFilter}
+                    onSelect={(name) => setIndustryFilter((cur) => (cur === name ? ALL : name))}
                   />
                 )}
               </div>
@@ -745,8 +825,9 @@ function Toggle({ active, onClick, icon, label }: { active: boolean; onClick: ()
   );
 }
 
-function Breakdown({ title, entries, total, colorFor }: {
+function Breakdown({ title, entries, total, colorFor, activeName, onSelect }: {
   title: string; entries: [string, number][]; total: number; colorFor: (name: string) => string;
+  activeName?: string | null; onSelect?: (name: string) => void;
 }) {
   return (
     <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #E8D5C4', borderRadius: '12px', padding: '16px' }}>
@@ -754,8 +835,21 @@ function Breakdown({ title, entries, total, colorFor }: {
       <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '260px', overflowY: 'auto' }}>
         {entries.map(([name, amount]) => {
           const pct = total > 0 ? (amount / total) * 100 : 0;
+          const active = activeName === name;
           return (
-            <div key={name}>
+            <div
+              key={name}
+              onClick={onSelect ? () => onSelect(name) : undefined}
+              title={onSelect ? `Filter by ${name}` : undefined}
+              style={{
+                cursor: onSelect ? 'pointer' : 'default',
+                borderRadius: '6px',
+                padding: '3px 4px',
+                margin: '-3px -4px',
+                backgroundColor: active ? '#FFF1E6' : 'transparent',
+                boxShadow: active ? 'inset 0 0 0 1px #F76902' : 'none',
+              }}
+            >
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px', marginBottom: '3px' }}>
                 <span style={{ color: '#402E32', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '6px', overflow: 'hidden' }}>
                   <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: colorFor(name), flexShrink: 0 }} />
@@ -771,6 +865,64 @@ function Breakdown({ title, entries, total, colorFor }: {
         })}
         {entries.length === 0 && <div style={{ color: '#B5866E', fontSize: '13px' }}>No data</div>}
       </div>
+    </div>
+  );
+}
+
+// Type-ahead search over loaded accounts. Matches by company name or zip and,
+// on selection, flies the map to that account's marker and opens its popup.
+function SearchBox({ query, setQuery, matches, onPick, colorFor, placeOf }: {
+  query: string;
+  setQuery: (v: string) => void;
+  matches: SalesRow[];
+  onPick: (id: string) => void;
+  colorFor: (engineer: string) => string;
+  placeOf: (zip: string) => string;
+}) {
+  const [focused, setFocused] = useState(false);
+  const open = focused && query.trim().length > 0;
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', backgroundColor: '#FFFFFF', border: '1px solid #E8D5C4', borderRadius: '8px', padding: '8px 10px' }}>
+        <Search size={15} style={{ color: '#B5866E', flexShrink: 0 }} />
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setTimeout(() => setFocused(false), 150)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && matches[0]) onPick(matches[0].id); if (e.key === 'Escape') setQuery(''); }}
+          placeholder="Find company or zip…"
+          style={{ border: 'none', outline: 'none', fontSize: '14px', color: '#402E32', width: '170px', backgroundColor: 'transparent' }}
+        />
+        {query && (
+          <button onClick={() => setQuery('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#B5866E', display: 'flex', padding: 0 }} title="Clear">
+            <X size={14} />
+          </button>
+        )}
+      </div>
+      {open && (
+        <div style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, minWidth: '240px', zIndex: 1000, backgroundColor: '#FFFFFF', border: '1px solid #E8D5C4', borderRadius: '8px', boxShadow: '0 6px 20px rgba(64,46,50,0.15)', overflow: 'hidden' }}>
+          {matches.length === 0 ? (
+            <div style={{ padding: '10px 12px', fontSize: '13px', color: '#B5866E' }}>No matching accounts</div>
+          ) : (
+            matches.map((r) => (
+              <button
+                key={r.id}
+                onMouseDown={(e) => { e.preventDefault(); onPick(r.id); }}
+                style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', textAlign: 'left', background: 'none', border: 'none', borderBottom: '1px solid #F3EBE4', padding: '8px 12px', cursor: 'pointer' }}
+              >
+                <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: colorFor(r.engineer), flexShrink: 0 }} />
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#402E32', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.company}</span>
+                  <span style={{ display: 'block', fontSize: '11px', color: '#9c8a84' }}>{placeOf(r.zip)}</span>
+                </span>
+                <span style={{ fontSize: '12px', fontWeight: 600, color: '#F76902', flexShrink: 0 }}>{fmtMoney(r.sales)}</span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
     </div>
   );
 }

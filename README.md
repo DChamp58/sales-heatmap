@@ -15,10 +15,16 @@ from — by region, by industry, and by sales engineer.
 - **Heat layer** — intensity weighted by sales amount (Leaflet + leaflet.heat).
 - **Company markers** — sized by sales, color-coded per sales engineer, with
   click-through popups (company, amount, engineer, industry, location).
-- **Filters** — by sales engineer and (when present) by industry; toggle the
-  heat layer and markers independently.
-- **Summary** — total sales, company count, # engineers, geolocated count,
-  plus sales breakdowns by engineer and by industry.
+- **Filters** — by sales engineer, region (US state), and (when present) by
+  industry; toggle the heat layer and markers independently.
+- **Account search** — type-ahead box that finds an account by company name or
+  zip and flies the map to its marker, opening the popup.
+- **Region rollups** — sales aggregated by US state, with a clickable
+  "Sales by Region" breakdown that drills the map into a single state.
+- **Drill-down breakdowns** — clicking any engineer, region, or industry row
+  applies it as a filter (click again to clear).
+- **Summary** — total sales, company count, # engineers, # states, geolocated
+  count, plus sales breakdowns by engineer, region, and industry.
 - **Downloadable template** — generates a correctly-shaped starter `.xlsx`.
 
 ## Expected columns

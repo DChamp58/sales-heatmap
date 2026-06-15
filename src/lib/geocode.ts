@@ -8,6 +8,7 @@ export interface LatLng {
   lat: number;
   lng: number;
   place?: string; // e.g. "Rochester, NY"
+  state?: string; // two-letter state abbreviation, e.g. "NY"
 }
 
 const STORAGE_KEY = 'sales_heatmap_zip_cache_v1';
@@ -60,6 +61,7 @@ async function fetchZip(zip: string): Promise<LatLng | null> {
       lat,
       lng,
       place: `${place['place name']}, ${place['state abbreviation']}`,
+      state: place['state abbreviation'] || undefined,
     };
   } catch {
     return null;
