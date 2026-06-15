@@ -6,6 +6,7 @@ import 'leaflet.heat';
 import {
   Upload, MapPin, Users, Building2, DollarSign, AlertTriangle,
   Download, Loader2, X, Flame, Layers, EyeOff, Search, Map as MapIcon, Trophy, FilterX,
+  Maximize2, Minimize2,
 } from 'lucide-react';
 import { geocodeZips, normalizeZip, type LatLng } from '../lib/geocode';
 
@@ -277,6 +278,7 @@ export function SalesHeatmap() {
   const [showMarkers, setShowMarkers] = useState(true);
   const [hideNoSales, setHideNoSales] = useState(false);
   const [query, setQuery] = useState('');
+  const [expanded, setExpanded] = useState(false);
 
   const mapEl = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -362,15 +364,23 @@ export function SalesHeatmap() {
       .slice(0, 8);
   }, [query, filtered, geo, hideNoSales]);
 
+  // Fly the map to a given account and open its popup. Prefers the rendered
+  // marker (so the popup opens); falls back to the raw geocoded point when the
+  // marker isn't on the map (markers toggled off, or a $0 marker hidden).
   const goToRow = useCallback((id: string) => {
     const map = mapRef.current;
+    if (!map) return;
     const marker = markerByIdRef.current.get(id);
-    if (map && marker) {
-      map.flyTo(marker.getLatLng(), Math.max(map.getZoom(), 11), { duration: 0.6 });
+    if (marker) {
+      map.flyTo(marker.getLatLng(), Math.max(map.getZoom(), 12), { duration: 0.6 });
       marker.openPopup();
+    } else {
+      const row = rows.find((r) => r.id === id);
+      const ll = row ? geo[row.zip] : null;
+      if (ll) map.flyTo([ll.lat, ll.lng], Math.max(map.getZoom(), 12), { duration: 0.6 });
     }
     setQuery('');
-  }, []);
+  }, [rows, geo]);
 
   const filtersActive =
     engineerFilter !== ALL || industryFilter !== ALL || regionFilter !== ALL || query.trim() !== '';
@@ -593,6 +603,14 @@ export function SalesHeatmap() {
     return () => { clearTimeout(settle); ro.disconnect(); };
   }, [rows.length]);
 
+  // Allow Escape to leave the expanded (full-screen) map.
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setExpanded(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [expanded]);
+
   // -------------------------------------------------------------------------
   // Render
   // -------------------------------------------------------------------------
@@ -773,8 +791,34 @@ export function SalesHeatmap() {
               </div>
 
               {/* Map */}
-              <div style={{ position: 'relative', borderRadius: '14px', overflow: 'hidden', border: '1px solid #E8D5C4', boxShadow: '0 2px 12px rgba(64,46,50,0.06)' }}>
-                <div ref={mapEl} style={{ width: '100%', height: '560px', backgroundColor: '#EAE3DC' }} />
+              <div style={{
+                position: expanded ? 'fixed' : 'relative',
+                inset: expanded ? 0 : undefined,
+                zIndex: expanded ? 2000 : undefined,
+                borderRadius: expanded ? 0 : '14px',
+                overflow: 'hidden',
+                border: expanded ? 'none' : '1px solid #E8D5C4',
+                boxShadow: expanded ? 'none' : '0 2px 12px rgba(64,46,50,0.06)',
+              }}>
+                <div ref={mapEl} style={{ width: '100%', height: expanded ? '100vh' : '560px', backgroundColor: '#EAE3DC' }} />
+
+                {/* Expand / collapse */}
+                <button
+                  onClick={() => setExpanded((v) => !v)}
+                  title={expanded ? 'Exit full screen (Esc)' : 'Expand map'}
+                  style={{
+                    position: 'absolute', top: '12px', right: '12px', zIndex: 600,
+                    display: 'inline-flex', alignItems: 'center', gap: '6px',
+                    backgroundColor: 'rgba(255,255,255,0.95)', border: '1px solid #E8D5C4',
+                    borderRadius: '8px', padding: '7px 10px', cursor: 'pointer',
+                    fontSize: '13px', fontWeight: 600, color: '#402E32',
+                    boxShadow: '0 1px 6px rgba(0,0,0,0.15)',
+                  }}
+                >
+                  {expanded ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+                  {expanded ? 'Exit' : 'Expand'}
+                </button>
+
                 {/* Legend */}
                 <div style={{ position: 'absolute', bottom: '16px', left: '16px', zIndex: 500, backgroundColor: 'rgba(255,255,255,0.95)', borderRadius: '8px', padding: '8px 12px', fontSize: '11px', color: '#402E32', boxShadow: '0 1px 6px rgba(0,0,0,0.15)' }}>
                   <div style={{ fontWeight: 600, marginBottom: '4px' }}>Sales intensity</div>
